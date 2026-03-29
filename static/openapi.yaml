@@ -1,0 +1,1146 @@
+openapi: 3.0.0
+
+info:
+  title: Tracy API
+  version: 1.0.0
+  description: |
+    API Tracy — gestion des modèles Ollama, collections RAG (Qdrant),
+    agents conversationnels, conversations, messages et inférence (chat SSE + extraction structurée).
+  contact:
+    email: cadence.ai.tracy@gmail.com
+
+servers:
+  - url: http://localhost:9090
+    description: Local
+  - url: https://ton-domaine.com
+    description: Production
+
+tags:
+  - name: Model
+    description: Gestion des modèles Ollama (téléchargement, suppression, liste)
+  - name: Collection
+    description: Gestion des collections vectorielles Qdrant et des fichiers indexés
+  - name: Agent
+    description: Gestion des agents RAG et des agents extracteurs
+  - name: Conversation
+    description: Gestion des conversations associées à un agent
+  - name: Message
+    description: Consultation des messages d'une conversation
+  - name: Inference
+    description: Chat en streaming SSE et extraction structurée de données
+
+# ─── Paths ────────────────────────────────────────────────────────────────────
+
+paths:
+
+  # ─── Model ──────────────────────────────────────────────────────────────────
+
+  /model:
+    get:
+      tags: [Model]
+      summary: Lister les modèles disponibles
+      description: Retourne la liste de tous les modèles Ollama actuellement téléchargés sur le serveur.
+      operationId: listModels
+      responses:
+        '200':
+          description: Liste des modèles
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListModelsResponse'
+              example:
+                status: 200
+                result: [llama3.2, nomic-embed-text]
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    delete:
+      tags: [Model]
+      summary: Supprimer un modèle
+      description: Supprime un modèle Ollama téléchargé localement.
+      operationId: deleteModel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteModelRequest'
+      responses:
+        '200':
+          description: Modèle supprimé
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteModelResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /model/download:
+    post:
+      tags: [Model]
+      summary: Télécharger un modèle (stream SSE)
+      description: |
+        Lance le téléchargement d'un modèle Ollama et diffuse la progression
+        via **Server-Sent Events**. Chaque événement SSE transporte un entier
+        représentant le pourcentage d'avancement (0 → 100).
+      operationId: downloadModel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DownloadModelRequest'
+      responses:
+        '200':
+          description: Stream SSE de progression
+          content:
+            text/event-stream:
+              schema:
+                type: integer
+                description: Pourcentage d'avancement (0-100)
+                example: 42
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ─── Collection ─────────────────────────────────────────────────────────────
+
+  /collection:
+    get:
+      tags: [Collection]
+      summary: Lister toutes les collections
+      description: Retourne la liste des collections vectorielles Qdrant existantes.
+      operationId: listCollections
+      responses:
+        '200':
+          description: Liste des collections
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListCollectionResponse'
+              example:
+                status: 200
+                result: [documents, contrats, faq]
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags: [Collection]
+      summary: Créer une collection vectorielle (stream SSE)
+      description: |
+        Crée une nouvelle collection Qdrant vide avec la dimension vectorielle spécifiée.
+        La progression est diffusée via **Server-Sent Events** (100 à la fin de la création).
+        Le champ `size` doit correspondre à la dimension de sortie du modèle d'embedding utilisé
+        (ex : 768 pour `nomic-embed-text`).
+      operationId: createCollection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCollectionRequest'
+      responses:
+        '200':
+          description: Stream SSE — entier 100 à la fin
+          content:
+            text/event-stream:
+              schema:
+                type: integer
+                example: 100
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    delete:
+      tags: [Collection]
+      summary: Supprimer une collection
+      description: Supprime une collection Qdrant et tous les vecteurs qu'elle contient.
+      operationId: deleteCollection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteCollectionRequest'
+      responses:
+        '200':
+          description: Collection supprimée
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteCollectionResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ─── Collection / File ──────────────────────────────────────────────────────
+
+  /collection/file:
+    get:
+      tags: [Collection]
+      summary: Lister les fichiers d'une collection
+      description: |
+        Retourne la liste des fichiers uniques indexés dans une collection Qdrant,
+        dédupliqués depuis les payloads des points vectoriels.
+        Le nom de la collection est transmis dans le **corps de la requête** (JSON).
+      operationId: listFiles
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ListFilesRequest'
+      responses:
+        '200':
+          description: Liste des fichiers indexés
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListFilesResponse'
+              example:
+                status: 200
+                result: [rapport_q3.pdf, contrat_dupont.docx]
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags: [Collection]
+      summary: Uploader et indexer un fichier
+      description: |
+        Envoie un fichier via `multipart/form-data`, extrait son contenu textuel,
+        le découpe en chunks et indexe les vecteurs dans la collection Qdrant cible.
+        En cas d'échec partiel, les points déjà insérés sont supprimés (rollback).
+
+        Les champs `collection` et `model` sont **obligatoires**.
+
+        **Formats supportés :**
+        | Extension | Type |
+        |---|---|
+        | `.pdf` | PDF |
+        | `.docx` | Word (Office Open XML) |
+        | `.doc` | Word (ancien format binaire) |
+        | `.odt` | OpenDocument Text |
+        | `.pptx` | PowerPoint |
+        | `.xlsx` `.xls` `.xlsm` | Excel |
+        | `.csv` | CSV |
+        | `.html` `.htm` | HTML |
+        | Autres | Lu comme texte brut |
+
+        Certaines extensions peuvent être ignorées selon la configuration serveur
+        (fichiers binaires non extractibles). Dans ce cas, le serveur retourne une erreur 500.
+      operationId: uploadFile
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [collection, model, file]
+              properties:
+                collection:
+                  type: string
+                  description: Nom de la collection cible
+                  example: documents
+                model:
+                  type: string
+                  description: Modèle d'embedding utilisé pour vectoriser le fichier
+                  example: nomic-embed-text
+                file:
+                  type: string
+                  format: binary
+                  description: Fichier à indexer
+      responses:
+        '200':
+          description: Fichier indexé avec succès
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadFileResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    delete:
+      tags: [Collection]
+      summary: Supprimer un fichier d'une collection
+      description: |
+        Supprime tous les points Qdrant associés à un fichier dans une collection.
+        Aucune suppression du fichier source sur disque n'est effectuée.
+      operationId: deleteFile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteFileRequest'
+      responses:
+        '200':
+          description: Fichier supprimé de la collection
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteFileResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ─── Agent ──────────────────────────────────────────────────────────────────
+
+  /agent:
+    get:
+      tags: [Agent]
+      summary: Lister tous les agents
+      description: Retourne la liste de tous les agents (RAG et extracteurs) enregistrés en base.
+      operationId: listAgents
+      responses:
+        '200':
+          description: Liste des agents
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListAgentsResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    delete:
+      tags: [Agent]
+      summary: Supprimer un agent
+      description: Supprime un agent par son identifiant numérique.
+      operationId: deleteAgent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteAgentRequest'
+      responses:
+        '200':
+          description: Agent supprimé
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteAgentResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /agent/name:
+    get:
+      tags: [Agent]
+      summary: Récupérer un agent par son nom
+      description: |
+        Recherche et retourne un agent dont le nom correspond exactement au paramètre fourni.
+        Le nom est transmis dans le **corps de la requête** (JSON).
+      operationId: getAgentByName
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GetAgentByNameRequest'
+      responses:
+        '200':
+          description: Agent trouvé
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetAgentByNameResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /agent/agent:
+    post:
+      tags: [Agent]
+      summary: Créer un agent RAG conversationnel
+      description: |
+        Crée un agent conversationnel et initialise automatiquement :
+        - une **conversation initiale** associée à l'agent
+        - un **message système** (rôle `system`) injecté en tête de cette conversation avec le contenu de `role`
+
+        Le champ `folder` désigne la collection Qdrant utilisée comme base de connaissance RAG.
+        Si `folder` est non vide, `embedding_model` est **obligatoire** au moment du chat
+        (sans quoi le chat retournera une erreur `folder set but no embedding model`).
+      operationId: createAgent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAgentRequest'
+      responses:
+        '200':
+          description: Agent créé
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateAgentResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /agent/extractor:
+    post:
+      tags: [ Agent ]
+      summary: Créer un agent extracteur
+      description: |
+        Crée un agent spécialisé dans l'extraction d'informations structurées depuis un texte.
+
+        Comme `POST /agent/agent`, crée automatiquement une conversation initiale et un message
+        système enrichi du comportement extracteur fixe (instruction JSON-only).
+
+        Cet agent extracteur n'utilise pas de collection RAG et ne prend donc pas de `folder`.
+
+        Le champ `format` est un objet JSON de schéma où chaque clé est un champ attendu
+        en sortie, associé à un objet de définition contenant obligatoirement un champ `"type"`.
+
+        Types supportés dans le schéma :
+        - `"string"` — toute valeur est convertie en chaîne
+        - `"number"` — attend un `float64` ou une string numérique parseable
+        - tout autre type — valeur transmise telle quelle
+
+        Le format est validé à la création : retourne 400 si le JSON est invalide,
+        si l'objet est vide, ou si un champ ne possède pas de `"type"`.
+      operationId: createExtractor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateExtractorRequest'
+      responses:
+        '200':
+          description: Agent extracteur créé
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateExtractorResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ─── Conversation ────────────────────────────────────────────────────────────
+
+  /conversation:
+    get:
+      tags: [Conversation]
+      summary: Lister les conversations d'un agent
+      description: |
+        Retourne toutes les conversations associées à un agent donné.
+        L'`agent_id` est transmis dans le **corps de la requête** (JSON).
+      operationId: listConversations
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ListConversationsRequest'
+      responses:
+        '200':
+          description: Liste des conversations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListConversationsResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags: [Conversation]
+      summary: Créer une conversation
+      description: |
+        Ouvre une nouvelle conversation pour un agent existant.
+        Injecte automatiquement le `role` de l'agent comme premier message système,
+        garantissant que chaque conversation démarre avec le bon contexte.
+        Retourne 404 si l'agent est introuvable.
+      operationId: createConversation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateConversationRequest'
+      responses:
+        '200':
+          description: Conversation créée
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateConversationResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    delete:
+      tags: [Conversation]
+      summary: Supprimer une conversation
+      description: Supprime une conversation et tous ses messages associés.
+      operationId: deleteConversation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteConversationRequest'
+      responses:
+        '200':
+          description: Conversation supprimée
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteConversationResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ─── Message ─────────────────────────────────────────────────────────────────
+
+  /message:
+    get:
+      tags: [Message]
+      summary: Lister les messages d'une conversation
+      description: |
+        Retourne l'historique complet des messages (user + assistant) d'une conversation.
+        Le `conversation_id` est transmis dans le **corps de la requête** (JSON).
+      operationId: listMessages
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ListMessagesRequest'
+      responses:
+        '200':
+          description: Historique des messages
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListMessagesResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ─── Inference ───────────────────────────────────────────────────────────────
+
+  /chat:
+    post:
+      tags: [Inference]
+      summary: Chat avec un agent (stream SSE)
+      description: |
+        Envoie un prompt à un agent dans le contexte d'une conversation existante.
+        La réponse est diffusée token par token via **Server-Sent Events**.
+
+        **Pipeline d'exécution :**
+        1. Lecture de l'agent et de l'historique de la conversation
+        2. Si `folder` est défini sur l'agent, recherche RAG des `limit` chunks les plus pertinents
+           (nécessite que `embedding_model` soit défini — sinon erreur 500 `folder set but no embedding model`)
+        3. Injection du contexte RAG et de l'historique dans le prompt
+        4. Appel streaming au LLM via Ollama
+        5. Persistance du prompt (`user`) et de la réponse complète (`assistant`) en base
+
+        **Format SSE** : chaque event contient un fragment de texte (token ou groupe de tokens).
+        Le flux se termine quand la connexion est fermée par le serveur.
+      operationId: chat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+      responses:
+        '200':
+          description: Stream SSE de tokens
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: Fragment de réponse généré par le LLM
+                example: "Voici les informations sur les congés : les salariés bénéficient de..."
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /extract:
+    post:
+      tags: [Inference]
+      summary: Extraction structurée via un agent extracteur
+      description: |
+        Soumet un texte à un agent extracteur et retourne un objet JSON structuré
+        selon le schéma `format` défini à la création de l'agent.
+
+        **Pipeline d'exécution :**
+        1. Lecture de l'agent — retourne 404 si introuvable, 400 si ce n'est pas un extracteur
+        2. Construction du prompt avec le texte et le schéma
+        3. Appel au LLM en mode JSON (jusqu'à `nb` tentatives)
+        4. Validation et filtrage de la réponse selon le schéma typé
+        5. Retourne 422 si toutes les tentatives échouent
+
+        Contrairement à `/chat`, cette route ne persiste aucun message et n'utilise pas d'historique.
+      operationId: extract
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExtractRequest'
+      responses:
+        '200':
+          description: Données extraites au format JSON
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtractResponse'
+              example:
+                status: 200
+                result: '{"date":"01/01/2024","parties":["Dupont","Martin"],"montant":5000}'
+        '400':
+          description: L'agent ciblé n'est pas un extracteur (`not extractor`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: 400
+                result: not extractor
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: L'extraction a échoué — le LLM n'a pas pu produire un JSON valide (`failed to extract`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: 422
+                result: failed to extract
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+# ─── Components ───────────────────────────────────────────────────────────────
+
+components:
+
+  # ─── Reusable responses ─────────────────────────────────────────────────────
+
+  responses:
+    BadRequest:
+      description: Paramètres manquants ou invalides
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: 400
+            result: bad request
+    NotFound:
+      description: Ressource introuvable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: 404
+            result: not found
+    Conflict:
+      description: Ressource déjà existante (contrainte UNIQUE)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: 409
+            result: UNIQUE constraint failed
+    InternalError:
+      description: Erreur interne du serveur
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: 500
+            result: internal server error
+
+  # ─── Schemas ────────────────────────────────────────────────────────────────
+
+  schemas:
+
+    # ── Generic ─────────────────────────────────────────────────────────────
+
+    ErrorResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+        result:
+          type: string
+
+    # ── Model ────────────────────────────────────────────────────────────────
+
+    DownloadModelRequest:
+      type: object
+      required: [model]
+      properties:
+        model:
+          type: string
+          description: Nom du modèle Ollama à télécharger
+          example: llama3.2
+
+    DeleteModelRequest:
+      type: object
+      required: [model]
+      properties:
+        model:
+          type: string
+          description: Nom du modèle Ollama à supprimer
+          example: llama3.2
+
+    DeleteModelResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          example: 200
+        result: {}
+
+    ListModelsResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          example: 200
+        result:
+          type: array
+          items:
+            type: string
+          example: [llama3.2, nomic-embed-text]
+
+    # ── Collection ───────────────────────────────────────────────────────────
+
+    CreateCollectionRequest:
+      type: object
+      required: [name, size]
+      properties:
+        name:
+          type: string
+          description: Nom de la collection à créer
+          example: documents
+        size:
+          type: integer
+          description: Dimension des vecteurs (doit correspondre au modèle d'embedding, ex. 768 pour nomic-embed-text)
+          example: 768
+
+    DeleteCollectionRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Nom de la collection à supprimer
+          example: documents
+
+    DeleteCollectionResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          example: 200
+        result: {}
+
+    ListCollectionResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          example: 200
+        result:
+          type: array
+          items:
+            type: string
+          example: [documents, contrats, faq]
+
+    # ── File ─────────────────────────────────────────────────────────────────
+
+    UploadFileResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          example: 200
+        result: {}
+
+    DeleteFileRequest:
+      type: object
+      required: [collection, name]
+      properties:
+        collection:
+          type: string
+          description: Nom de la collection contenant le fichier
+          example: documents
+        name:
+          type: string
+          description: Nom (path) du fichier à supprimer de la collection
+          example: rapport_q3.pdf
+
+    DeleteFileResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          example: 200
+        result: {}
+
+    ListFilesRequest:
+      type: object
+      required: [collection]
+      properties:
+        collection:
+          type: string
+          description: Nom de la collection dont on veut lister les fichiers
+          example: documents
+
+    ListFilesResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          example: 200
+        result:
+          type: array
+          items:
+            type: string
+          example: [rapport_q3.pdf, contrat_dupont.docx]
+
+    # ── Agent ────────────────────────────────────────────────────────────────
+
+    CreateAgentRequest:
+      type: object
+      required: [name, role, folder, model]
+      properties:
+        name:
+          type: string
+          description: Nom unique de l'agent
+          example: Assistant RH
+        role:
+          type: string
+          description: Prompt système définissant le comportement de l'agent
+          example: Tu es un assistant spécialisé en ressources humaines. Réponds uniquement à partir des documents fournis.
+        folder:
+          type: string
+          description: |
+            Nom de la collection Qdrant utilisée comme base de connaissance RAG.
+            Si vide (`""`), l'agent répond sans contexte documentaire — le LLM s'appuie
+            uniquement sur ses connaissances intrinsèques et l'historique de la conversation.
+            Si non vide, `embedding_model` est obligatoire au moment du chat.
+          example: documents
+        model:
+          type: string
+          description: Modèle Ollama utilisé pour la génération (LLM)
+          example: llama3.2
+        embedding_model:
+          type: string
+          nullable: true
+          description: Modèle d'embedding à utiliser pour la recherche RAG (optionnel — utilise le défaut si absent)
+          example: nomic-embed-text
+
+    CreateAgentResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          example: 200
+        result:
+          $ref: '#/components/schemas/Agent'
+
+    CreateExtractorRequest:
+      type: object
+      required: [ name, role, model, format ]
+      properties:
+        name:
+          type: string
+          description: Nom unique de l'agent extracteur
+          example: Extracteur contrats
+        role:
+          type: string
+          description: Prompt système de l'extracteur
+          example: Tu extrais les informations clés des contrats juridiques. Retourne uniquement le JSON demandé.
+        model:
+          type: string
+          description: Modèle Ollama utilisé pour l'extraction
+          example: llama3.2
+        format:
+          type: string
+          description: |
+            Schéma JSON de sortie. Chaque clé est un champ attendu, associé à un objet
+            de définition contenant obligatoirement un champ `"type"` (`"string"` ou `"number"`).
+            Le champ optionnel `"enum"` permet de contraindre les valeurs acceptées.
+          example: |
+            {
+              "status": {
+                "type": "string",
+                "enum": ["Intern", "Apprentice", "Employee", "Engineer", "Researcher", "Consultant", "Manager", "Director", "C-Level", "Founder"]
+              },
+              "name": {
+                "type": "string"
+              },
+              "salary": {
+                "type": "number"
+              }
+            }
+
+    CreateExtractorResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          example: 200
+        result:
+          $ref: '#/components/schemas/Agent'
+
+    DeleteAgentRequest:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: integer
+          description: Identifiant numérique de l'agent à supprimer
+          example: 1
+
+    DeleteAgentResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          example: 200
+        result: {}
+
+    ListAgentsResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          example: 200
+        result:
+          type: array
+          items:
+            $ref: '#/components/schemas/Agent'
+
+    GetAgentByNameRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Nom exact de l'agent à récupérer
+          example: Assistant RH
+
+    GetAgentByNameResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          example: 200
+        result:
+          $ref: '#/components/schemas/Agent'
+
+    Agent:
+      type: object
+      description: Représentation d'un agent (RAG ou extracteur) en base de données
+      properties:
+        id:
+          type: integer
+          description: Identifiant unique auto-incrémenté
+          example: 1
+        name:
+          type: string
+          description: Nom de l'agent
+          example: Assistant RH
+        role:
+          type: string
+          description: Prompt système de l'agent
+          example: Tu es un assistant spécialisé en ressources humaines.
+        folder:
+          type: string
+          description: Collection Qdrant associée à l'agent
+          example: documents
+        model:
+          type: string
+          description: Modèle LLM utilisé
+          example: llama3.2
+        embedding_model:
+          type: string
+          nullable: true
+          description: Modèle d'embedding (null si non précisé)
+          example: nomic-embed-text
+        format:
+          type: string
+          nullable: true
+          description: Schéma JSON de sortie pour les agents extracteurs (null pour les agents RAG)
+          example: '{"date": {"type": "string"}, "montant": {"type": "number"}}'
+
+    # ── Conversation ─────────────────────────────────────────────────────────
+
+    CreateConversationRequest:
+      type: object
+      required: [agent_id]
+      properties:
+        agent_id:
+          type: integer
+          description: Identifiant de l'agent auquel rattacher la conversation
+          example: 1
+
+    CreateConversationResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          example: 200
+        result:
+          $ref: '#/components/schemas/Conversation'
+
+    DeleteConversationRequest:
+      type: object
+      required: [conversation_id]
+      properties:
+        conversation_id:
+          type: integer
+          description: Identifiant de la conversation à supprimer
+          example: 1
+
+    DeleteConversationResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          example: 200
+        result: {}
+
+    ListConversationsResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          example: 200
+        result:
+          type: array
+          items:
+            $ref: '#/components/schemas/Conversation'
+
+    Conversation:
+      type: object
+      description: Représentation d'une conversation en base de données
+      properties:
+        id:
+          type: integer
+          description: Identifiant unique
+          example: 1
+        agent_id:
+          type: integer
+          description: Identifiant de l'agent associé
+          example: 1
+        created_at:
+          type: integer
+          description: Timestamp Unix de création
+          example: 1714000000
+
+    # ── Message ──────────────────────────────────────────────────────────────
+
+    ListMessagesResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          example: 200
+        result:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+
+    Message:
+      type: object
+      description: Message (user ou assistant) appartenant à une conversation
+      properties:
+        id:
+          type: integer
+          description: Identifiant unique du message
+          example: 1
+        conversation_id:
+          type: integer
+          description: Identifiant de la conversation parente
+          example: 1
+        role:
+          type: string
+          description: Rôle de l'émetteur
+          enum: [user, assistant]
+          example: user
+        content:
+          type: string
+          description: Contenu textuel du message
+          example: Quelles sont les règles de congés ?
+        created_at:
+          type: integer
+          description: Timestamp Unix de création
+          example: 1714000000
+
+    # ── Inference ────────────────────────────────────────────────────────────
+
+    ChatRequest:
+      type: object
+      required: [agent_id, conversation_id, prompt]
+      properties:
+        agent_id:
+          type: integer
+          description: Identifiant de l'agent à interroger
+          example: 1
+        conversation_id:
+          type: integer
+          description: Identifiant de la conversation (pour injecter l'historique)
+          example: 1
+        prompt:
+          type: string
+          description: Message de l'utilisateur
+          example: Quelles sont les congés prévus cette année ?
+        limit:
+          type: integer
+          description: "Nombre maximum de chunks RAG à injecter en contexte (défaut recommandé : 5)"
+          example: 5
+
+    ExtractRequest:
+      type: object
+      required: [agent_id, text]
+      properties:
+        agent_id:
+          type: integer
+          description: Identifiant de l'agent extracteur
+          example: 1
+        text:
+          type: string
+          description: Texte brut à analyser
+          example: Contrat signé le 01/01/2024 entre Dupont et Martin pour la somme de 5000€.
+        nb:
+          type: integer
+          description: Nombre maximum de tentatives d'extraction en cas de réponse JSON invalide (défaut recommandé 3)
+          example: 3
+
+    ExtractResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          example: 200
+        result:
+          type: string
+          description: JSON structuré selon le schéma typé défini dans l'agent extracteur
+          example: '{"date":"01/01/2024","parties":"Dupont et Martin","montant":5000}'

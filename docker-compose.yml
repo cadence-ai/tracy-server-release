@@ -1,0 +1,75 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - tracy_net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
+    healthcheck:
+      test: [ "CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/11434'" ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - tracy_net
+    healthcheck:
+      test: [ "CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333'" ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  tracy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - PORT=${PORT:-9090}
+    image: tracy/tracy
+    container_name: tracy
+    restart: unless-stopped
+    environment:
+      - PORT=${PORT:-9090}
+      - BASE_URL=${BASE_URL:-http://localhost:9090}
+    ports:
+      - "${PORT:-9090}:${PORT:-9090}"
+    volumes:
+      - tracy_database:/data/database
+    depends_on:
+      ollama:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    networks:
+      - tracy_net
+
+volumes:
+  ollama_data:
+  qdrant_data:
+  tracy_database:
+
+networks:
+  tracy_net:
+    driver: bridge
