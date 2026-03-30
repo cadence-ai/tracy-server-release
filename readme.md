@@ -1,3 +1,7 @@
+# [Tracy AI Platform](https://app.tracy-ai.com/)
+
+---
+
 # Tracy Server
 
 Tracy is a self-hosted AI backend server built on [Ollama](https://ollama.com) and [Qdrant](https://qdrant.tech). It exposes a REST API to manage language models, vector collections, agents, conversations, and document extraction — all running locally via Docker.
@@ -240,3 +244,9 @@ Run a structured extraction using an extractor agent.
 | `tracy_database` | `/data/database` | Tracy's SQLite database |
 
 To back up your data, snapshot these Docker volumes.
+
+---
+
+## Learn More
+
+For more information, visit the [Tracy AI Platform](https://app.tracy-ai.com/)
